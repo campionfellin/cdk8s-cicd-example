@@ -1,0 +1,68 @@
+on: [push]
+
+name: Build and Deploy to Amazon EKS
+
+env:
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  GITHUB_SHA: ${{ github.sha }}
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: hello-cdk8s
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build a docker container and
+        # push it to ECR so that it can
+        # be deployed to ECS.
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./application/
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+    - name: Build cdk8s template
+      run: |
+        yarn config set workspaces-experimental true
+        yarn install -L
+        AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID GITHUB_SHA=$GITHUB_SHA yarn build
+        AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID GITHUB_SHA=$GITHUB_SHA yarn synth
+
+    - name: Install eksctl cli
+      run: |
+        curl --silent --location "https://github.com/weaveworks/eksctl/releases/download/0.15.0-rc.1/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+        sudo mv /tmp/eksctl /usr/local/bin
+        eksctl version
+
+    - name: Install kubectl 14
+      run: |
+        curl -o kubectl https://amazon-eks.s3-us-west-2.amazonaws.com/1.14.6/2019-08-22/bin/linux/amd64/kubectl
+        chmod +x ./kubectl
+        mkdir -p $HOME/bin && cp ./kubectl $HOME/bin/kubectl && export PATH=$PATH:$HOME/bin    
+ 
+    - name: Apply changes to cluster
+      run: |
+        eksctl get cluster --name=hello-cdk8s --region=us-east-1
+        aws eks --region us-east-1 update-kubeconfig --name hello-cdk8s
+        eksctl utils write-kubeconfig --cluster=hello-cdk8s --kubeconfig=$HOME/.kube/config --set-kubeconfig-context=false
+        ./kubectl version --short --client
+        ./kubectl apply -f ./dist/hellok8s.k8s.yaml

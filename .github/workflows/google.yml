@@ -1,0 +1,54 @@
+name: Build and Deploy to GKE
+
+on: [push]
+
+env:
+  GKE_PROJECT: ${{ secrets.GKE_PROJECT }}
+  GKE_EMAIL: ${{ secrets.GKE_EMAIL }}
+  GITHUB_SHA: ${{ github.sha }}
+  GKE_ZONE: us-west1-a
+  GKE_CLUSTER: hello-cdk8s
+  IMAGE: hello-cdk8s
+  REGISTRY_HOSTNAME: gcr.io
+  DEPLOYMENT_NAME: gke-auto-deploy
+
+jobs:
+  setup-build-publish-deploy:
+    name: Setup, Build, Publish, and Deploy
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: Checkout
+      uses: actions/checkout@v2
+
+    - uses: GoogleCloudPlatform/github-actions/setup-gcloud@master
+      with:
+        version: '270.0.0'
+        service_account_email: ${{ secrets.GKE_EMAIL }}
+        service_account_key: ${{ secrets.GKE_KEY }}
+
+    - run: |
+        gcloud auth configure-docker
+      
+    - name: Build Docker Image
+      run: |        
+        docker build -t "$REGISTRY_HOSTNAME"/"$GKE_PROJECT"/"$IMAGE":"$GITHUB_SHA" \
+        --build-arg GITHUB_SHA="$GITHUB_SHA" \
+        --build-arg GITHUB_REF="$GITHUB_REF" ./application/
+
+    - name: Publish
+      run: |
+        docker push $REGISTRY_HOSTNAME/$GKE_PROJECT/$IMAGE:$GITHUB_SHA
+    
+    - name: Build cdk8s template
+      run: |
+        yarn config set workspaces-experimental true
+        yarn install -L
+        GKE_EMAIL=$GKE_EMAIL GKE_PROJECT=$GKE_PROJECT GITHUB_SHA=$GITHUB_SHA yarn build
+        GKE_EMAIL=$GKE_EMAIL GKE_PROJECT=$GKE_PROJECT GITHUB_SHA=$GITHUB_SHA yarn synth
+
+    - name: Deploy
+      run: |
+        gcloud container clusters get-credentials $GKE_CLUSTER --zone $GKE_ZONE --project $GKE_PROJECT
+        kubectl apply -f ./dist/hellok8s.k8s.yaml
+        kubectl get services -o wide
