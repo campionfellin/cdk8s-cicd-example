@@ -6,7 +6,7 @@ app.get('/', (req: any, res: any) => {
   console.log(req);
   res
     .status(200)
-    .send('Hello, world!')
+    .send('Hello, new world!')
     .end();
 });
 
